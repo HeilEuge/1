@@ -14,7 +14,7 @@
         dateSelector: 'div.BodyRow__cell--emiXC:nth-child(5) > div[data-test="table-cell"]',
         serviceSelector: 'div.BodyRow__cell--emiXC:nth-child(6) > div[data-test="limitType-cell"]',
         arrivalButtonCellSelector: 'div.BodyRow__cell--emiXC.lastCell--D2Dm1 > div', // Селектор ячейки с кнопкой "Прибыл"
-        arrivalButtonSelector: 'button.button--ruJL-', // Селектор кнопки "Прибыл" // corrected selector
+        arrivalButtonSelector: 'button.button--ruJL-', // Селектор кнопки "Прибыл"
         debug: true
     };
 
@@ -39,7 +39,7 @@
 
     function extractDateTime(dateTimeText) {
         if (!dateTimeText) return { date: null, time: null };
-        const match = dateTimeText.match(/(\d{2}\.\d{2}\.\d{4}),\s*([\d:]+\s*-\s*[\d:]+)/);
+        const match = dateTimeText.match(/(\d{2}\.\d{2}\.\d{4}),\s*([\d:]+\s*-\s*[\д:]+)/);
         if (match) {
             return { date: match[1], time: match[2] };
         }
@@ -58,7 +58,7 @@
     // Функция проверки статуса прибытия
     function isArrived(arrivalButtonCell) {
         if (!arrivalButtonCell) return false;
-        const arrivedButton = arrivalButtonCell.querySelector('button.button--ruJL-.disabled--lf9BX'); // corrected selector
+        const arrivedButton = arrivalButtonCell.querySelector('button.button--ruJL-.disabled--lf9BX');
         return !!arrivedButton;
     }
 
@@ -259,7 +259,7 @@
                 border-bottom: 1px solid ${OZON_STYLE.colors.border};
             ">
                 <svg width="24" height="24" viewBox="0 0 24 24" style="margin-right: 8px;">
-                    <path fill="${OZON_STYLE.colors.primary}" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-8 14H7v-2h4v2zm0-4H7v-2h4v2zm0-4H7V7h4v2zm6 8h-4v-2h4v2zm0-4h-4v-2h4v2z"/>
+                    <path fill="${OZON_STYLE.colors.primary}" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-8 14H7v-2h4v2zm0-4H7v-2h4v2zm0-4H7V7h4v2zm6 8h-4v-2h4v2z"/>
                 </svg>
                 <h3 style="
                     margin: 0;
@@ -394,7 +394,7 @@
 
     function getShiftType(timeText) {
         if (!timeText || timeText === 'Показать') return 'Неизвестно';
-        const timeMatch = timeText.match(/\b(\d{1,2}):(\d{2})\b/g);
+        const timeMatch = timeText.match(/\b(\д{1,2}):(\д{2})\b/g);
         if (!timeMatch || timeMatch.length < 2) return 'Неизвестно';
         const startHour = parseInt(timeMatch[0].split(':')[0]);
         const endHour = parseInt(timeMatch[1].split(':')[0]);
