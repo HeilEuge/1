@@ -1,0 +1,421 @@
+// ==UserScript==
+// @name OZON Job Advanced Filter
+// @namespace http://tampermonkey.net/
+// @version 15.0
+// @description Фильтр с детальной статистикой по сменам и услугам с разделением дат и учетом прибытий
+// @match *://*/*
+// @grant none
+// ==/UserScript==
+(function() {
+    'use strict';
+
+    const CONFIG = {
+        rowSelector: '#app div.Table__tbody--y8vZz > div.BodyRow--umnf1',
+        dateSelector: 'div.BodyRow__cell--emiXC:nth-child(5) > div[data-test="table-cell"]',
+        serviceSelector: 'div.BodyRow__cell--emiXC:nth-child(6) > div[data-test="limitType-cell"]',
+        arrivalButtonCellSelector: 'div.BodyRow__cell--emiXC.lastCell--D2Dm1 > div', // Селектор ячейки с кнопкой "Прибыл"
+        arrivalButtonSelector: 'button.button--ruJL-', // Селектор кнопки "Прибыл"
+        debug: true
+    };
+
+    const OZON_STYLE = {
+        colors: {
+            primary: '#005bff',
+            primaryHover: '#004ecc',
+            background: '#ffffff',
+            text: '#1a1a1a',
+            textSecondary: '#666666',
+            border: '#e0e0e0',
+            surface: '#f5f5f5',
+            dayShift: '#00a650',
+            nightShift: '#005bff'
+        },
+        typography: {
+            fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif',
+            header: { fontSize: '18px', fontWeight: '500' },
+            body: { fontSize: '14px', lineHeight: '1.5' }
+        }
+    };
+
+    function extractDateTime(dateTimeText) {
+        if (!dateTimeText) return { date: null, time: null };
+        const match = dateTimeText.match(/(\d{2}\.\d{2}\.\д{4}),\s*([\д:]+\s*-\s*[\д:]+)/);
+        if (match) {
+            return { date: match[1], time: match[2] };
+        }
+        return { date: null, time: null };
+    }
+
+    function isTomorrow(dateString) {
+        if (!dateString) return false;
+        const [day, month, year] = dateString.split('.').map(Number);
+        const recordDate = new Date(year, month - 1, day);
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        return recordDate.toDateString() === tomorrow.toDateString();
+    }
+
+    // Функция проверки статуса прибытия
+    function isArrived(arrivalButtonCell) {
+        if (!arrivalButtonCell) return false;
+        const arrivedButton = arrivalButtonCell.querySelector('button.button--ruJL-.disabled--lf9BX');
+        return !!arrivedButton;
+    }
+
+    function analyzeData() {
+        const result = {
+            total: 0,
+            shifts: { 'Дневная': 0, 'Ночная': 0, 'Неизвестно': 0 },
+            arrivals: { 'Дневная': 0, 'Ночная': 0 },
+            servicesByShift: {
+                'Дневная': { 'сегодня': {}, 'завтра': {} },
+                'Ночная': { 'сегодня': {}, 'завтра': {} },
+                'Неизвестно': {}
+            },
+            allServices: new Set(),
+            sampleData: []
+        };
+
+        const rows = document.querySelectorAll(CONFIG.rowSelector);
+        if (!rows) {
+            console.error('Не найден селектор таблицы rowSelector');
+            return result;
+        }
+
+        rows.forEach((row, i) => {
+            try {
+                const dateCell = row.querySelector(CONFIG.dateSelector);
+                const serviceCell = row.querySelector(CONFIG.serviceSelector);
+                const arrivalButtonCell = row.querySelector(CONFIG.arrivalButtonCellSelector);
+
+                if (!dateCell || !serviceCell) {
+                    result.shifts['Неизвестно']++;
+                    return;
+                }
+
+                const { date, time } = extractDateTime(dateCell.textContent.trim());
+                const shiftType = getShiftType(time);
+                const isTomorrowShift = isTomorrow(date);
+                const arrived = isArrived(arrivalButtonCell);
+                const service = serviceCell.textContent.trim();
+                const timeText = dateCell.textContent.trim();
+
+                result.total++;
+                result.shifts[shiftType]++;
+                result.allServices.add(service);
+
+                if (shiftType === 'Дневная') {
+                    const shiftDateKey = isTomorrowShift ? 'завтра' : 'сегодня';
+                    if (!result.servicesByShift['Дневная'][shiftDateKey][service]) {
+                        result.servicesByShift['Дневная'][shiftDateKey][service] = 0;
+                    }
+                    result.servicesByShift['Дневная'][shiftDateKey][service]++;
+                    if (arrived) {
+                        result.arrivals['Дневная']++;
+                    }
+                } else if (shiftType === 'Ночная') {
+                    const shiftDateKey = isTomorrowShift ? 'завтра' : 'сегодня';
+                    if (!result.servicesByShift['Ночная'][shiftDateKey][service]) {
+                        result.servicesByShift['Ночная'][shiftDateKey][service] = 0;
+                    }
+                    result.servicesByShift['Ночная'][shiftDateKey][service]++;
+                    if (arrived) {
+                        result.arrivals['Ночная']++;
+                    }
+                } else {
+                    if (!result.servicesByShift['Неизвестно'][service]) {
+                        result.servicesByShift['Неизвестно'][service] = 0;
+                    }
+                    result.servicesByShift['Неизвестно'][service]++;
+                }
+
+                if (i < 3) {
+                    result.sampleData.push({
+                        timeText,
+                        shiftType,
+                        service,
+                        arrived
+                    });
+                }
+            } catch (e) {
+                console.error(`Ошибка в строке ${i + 1}:`, e);
+                result.shifts['Неизвестно']++;
+            }
+        });
+
+        return result;
+    }
+
+    function createServiceStatsHTML(servicesData) {
+        let html = '';
+
+        // Сортируем услуги по общему количеству записей
+        const sortedServices = Object.entries(servicesData)
+            .sort((a, b) => {
+                let countA = 0;
+                if (a[1]['сегодня']) countA += Object.values(a[1]['сегодня']).reduce((sum, val) => sum + val, 0);
+                if (a[1]['завтра']) countA += Object.values(a[1]['завтра']).reduce((sum, val) => sum + val, 0);
+                if (a[1]['Ночная']) countA += Object.values(a[1]['Ночная']).reduce((sum, val) => sum + val, 0);
+
+                let countB = 0;
+                if (b[1]['сегодня']) countB += Object.values(b[1]['сегодня']).reduce((sum, val) => sum + val, 0);
+                if (b[1]['завтра']) countB += Object.values(b[1]['завтра']).reduce((sum, val) => sum + val, 0);
+                if (b[1]['Ночная']) countB += Object.values(b[1]['Ночная']).reduce((sum, val) => sum + val, 0);
+
+                return countB - countA;
+            });
+
+        sortedServices.forEach(([service, shifts]) => {
+            const dayTodayCount = shifts['сегодня'] ? Object.values(shifts['сегодня']).reduce((sum, val) => sum + val, 0) : 0;
+            const dayTomorrowCount = shifts['завтра'] ? Object.values(shifts['завтра']).reduce((sum, val) => sum + val, 0) : 0;
+            const nightCount = shifts['Ночная'] ? Object.values(shifts['Ночная']).reduce((sum, val) => sum + val, 0) : 0;
+            const totalCount = dayTodayCount + dayTomorrowCount + nightCount;
+
+            html += `
+                <div style="
+                    background: ${OZON_STYLE.colors.background};
+                    border: 1px solid ${OZON_STYLE.colors.border};
+                    border-radius: 6px;
+                    padding: 12px;
+                    margin-bottom: 8px;
+                ">
+                    <div style="
+                        display: flex;
+                        justify-content: space-between;
+                        margin-bottom: 8px;
+                        font-weight: 500;
+                    ">
+                        <span>${service}</span>
+                        <span>${totalCount}</span>
+                    </div>
+
+                    <div style="
+                        display: flex;
+                        gap: 8px;
+                        font-size: 13px;
+                    ">
+                        <div style="
+                            flex: 1;
+                            background: ${OZON_STYLE.colors.surface};
+                            padding: 6px 8px;
+                            border-radius: 4px;
+                            color: ${OZON_STYLE.colors.dayShift};
+                        ">
+                            <div style="color: ${OZON_STYLE.colors.textSecondary}">День (сегодня)</div>
+                            <div>${dayTodayCount}</div>
+                        </div>
+                        <div style="
+                            flex: 1;
+                            background: ${OZON_STYLE.colors.surface};
+                            padding: 6px 8px;
+                            border-radius: 4px;
+                            color: ${OZON_STYLE.colors.dayShift};
+                        ">
+                            <div style="color: ${OZON_STYLE.colors.textSecondary}">День (завтра)</div>
+                            <div>${dayTomorrowCount}</div>
+                        </div>
+                        <div style="
+                            flex: 1;
+                            background: ${OZON_STYLE.colors.surface};
+                            padding: 6px 8px;
+                            border-radius: 4px;
+                            color: ${OZON_STYLE.colors.nightShift};
+                        ">
+                            <div style="color: ${OZON_STYLE.colors.textSecondary}">Ночь</div>
+                            <div>${nightCount}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+
+        return html;
+    }
+
+    function createPanel(stats) {
+        const panel = document.createElement('div');
+        panel.id = 'ozon-filter-panel';
+        panel.style = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 99999;
+            background: ${OZON_STYLE.colors.background};
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            padding: 16px;
+            width: 400px;
+            max-height: 80vh;
+            overflow-y: auto;
+            font-family: ${OZON_STYLE.typography.fontFamily};
+            color: ${OZON_STYLE.colors.text};
+        `;
+
+        panel.innerHTML = `
+            <header style="
+                display: flex;
+                align-items: center;
+                margin-bottom: 16px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid ${OZON_STYLE.colors.border};
+            ">
+                <svg width="24" height="24" viewBox="0 0 24 24" style="margin-right: 8px;">
+                    <path fill="${OZON_STYLE.colors.primary}" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM11 17H7v-2h4v2zM11 13H7v-2h4v2zM11 9H7V7h4v2zM17 17h-4v-2h4v2z"/>
+                </svg>
+                <h3 style="
+                    margin: 0;
+                    font-size: ${OZON_STYLE.typography.header.fontSize};
+                    font-weight: ${OZON_STYLE.typography.header.fontWeight};
+                ">
+                    Статистика по сменам
+                </h3>
+            </header>
+
+            <div style="margin-bottom: 16px;">
+                <div style="
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 8px;
+                    margin-bottom: 12px;
+                ">
+                    <div style="
+                        background: ${OZON_STYLE.colors.surface};
+                        padding: 12px;
+                        border-radius: 6px;
+                        text-align: center;
+                    ">
+                        <div style="
+                            color: ${OZON_STYLE.colors.textSecondary};
+                            font-size: 13px;
+                            margin-bottom: 4px;
+                        ">Дневные смены</div>
+                        <div style="
+                            font-size: 18px;
+                            font-weight: 500;
+                            color: ${OZON_STYLE.colors.dayShift};
+                        ">${stats.shifts.Дневная}</div>
+                         <div style="
+                            color: ${OZON_STYLE.colors.textSecondary};
+                            font-size: 13px;
+                            margin-top: 4px;
+                        ">Прибыло: ${stats.arrivals.Дневная}</div>
+                    </div>
+
+                    <div style="
+                        background: ${OZON_STYLE.colors.surface};
+                        padding: 12px;
+                        border-radius: 6px;
+                        text-align: center;
+                    ">
+                        <div style="
+                            color: ${OZON_STYLE.colors.textSecondary};
+                            font-size: 13px;
+                            margin-bottom: 4px;
+                        ">Ночные смены</div>
+                        <div style="
+                            font-size: 18px;
+                            font-weight: 500;
+                            color: ${OZON_STYLE.colors.nightShift};
+                        ">${stats.shifts.Ночная}</div>
+                        <div style="
+                            color: ${OZON_STYLE.colors.textSecondary};
+                            font-size: 13px;
+                            margin-top: 4px;
+                        ">Прибыло: ${stats.arrivals.Ночная}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="
+                margin-bottom: 16px;
+                border-bottom: 1px solid ${OZON_STYLE.colors.border};
+                padding-bottom: 12px;
+            ">
+                <div style="
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 8px;
+                ">
+                    <div style="
+                        font-weight: 500;
+                        color: ${OZON_STYLE.colors.text};
+                    ">
+                        Статистика по услугам
+                    </div>
+                    <div style="
+                        color: ${OZON_STYLE.colors.textSecondary};
+                        font-size: 13px;
+                    ">
+                        Всего: ${stats.allServices.size}
+                    </div>
+                </div>
+
+                ${createServiceStatsHTML(stats.servicesByShift)}
+            </div>
+
+            ${CONFIG.debug && stats.sampleData.length > 0 ? `
+            <div>
+                <div style="
+                    color: ${OZON_STYLE.colors.textSecondary};
+                    margin-bottom: 8px;
+                ">Примеры записей</div>
+                ${stats.sampleData.map(e => `
+                    <div style="
+                        background: ${OZON_STYLE.colors.surface};
+                        border-radius: 6px;
+                        padding: 10px;
+                        margin-bottom: 8px;
+                        font-size: 13px;
+                    ">
+                        <div style="
+                            display: flex;
+                            justify-content: space-between;
+                            margin-bottom: 4px;
+                        ">
+                            <span>${e.service}</span>
+                            <span style="color: ${e.shiftType === 'Ночная' ? OZON_STYLE.colors.nightShift :
+                                            e.shiftType === 'Дневная' ? OZON_STYLE.colors.dayShift :
+                                            '#666666'}">
+                                ${e.shiftType}
+                            </span>
+                            <span>${e.arrived ? 'Прибыл' : 'Ожидает'}</span>
+                        </div>
+                        <div style="color: ${OZON_STYLE.colors.textSecondary}">
+                            ${e.timeText || 'Время не указано'}
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+            ` : ''}
+        `;
+
+        document.body.appendChild(panel);
+    }
+
+    function getShiftType(timeText) {
+        if (!timeText || timeText === 'Показать') return 'Неизвестно';
+        const timeMatch = timeText.match(/\b(\d{2}):(\d{2})\b/g);
+        if (!timeMatch || timeMatch.length < 2) return 'Неизвестно';
+        const [startHour] = timeText.split('-')[0].split(':').map(Number);
+        return (startHour >= 21 || startHour < 9) ? 'Ночная' : 'Дневная';
+    }
+
+    function init() {
+        const oldPanel = document.getElementById('ozon-filter-panel');
+        if (oldPanel) oldPanel.remove();
+
+        const stats = analyzeData();
+        createPanel(stats);
+
+        if (CONFIG.debug) {
+            console.log('Детальная статистика:', stats);
+        }
+    }
+
+    if (document.readyState === 'complete') {
+        setTimeout(init, 1500);
+    } else {
+        window.addEventListener('load', () => setTimeout(init, 1500));
+    }
+})();
